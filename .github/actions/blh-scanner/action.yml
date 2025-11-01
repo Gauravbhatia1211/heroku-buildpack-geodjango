@@ -1,0 +1,43 @@
+# This file defines the "module" itself.
+# It tells GitHub what inputs it takes and how to run it.
+name: 'MISS Framework - BLM Scanner'
+description: 'Scans a repository for hijackable broken links based on the MISS framework.'
+author: 'Gaurav Bhatia & Raj Sharma'
+
+inputs:
+  scan_directory:
+    description: 'The directory to scan. Defaults to the root.'
+    required: false
+    default: '.'
+  output_file:
+    description: 'The name of the JSON report file.'
+    required: false
+    default: 'blh_report.json'
+
+outputs:
+  report_path:
+    description: 'The path to the generated JSON report.'
+    value: ${{ steps.run_scan.outputs.report_path }}
+
+runs:
+  using: 'composite' # This lets us run a series of simple shell commands
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      shell: bash
+      run: pip install -r ${{ github.action_path }}/requirements.txt
+
+    - name: Run BLH Scanner
+      id: run_scan
+      shell: bash
+      run: |
+        python ${{ github.action_path }}/scan.py \
+          --directory ${{ inputs.scan_directory }} \
+          --output ${{ inputs.output_file }}
+        
+        echo "report_path=${{ inputs.output_file }}" >> $GITHUB_OUTPUT
+
