@@ -1,5 +1,6 @@
 """
 MISS Framework - BLH Scanner (scan.py)
+VERSION 2.2 - Fixed typo in argparse (parser.add.argument -> parser.add_argument)
 VERSION 2.1 - Removed file extension filter to scan *all* files.
 Upgraded to specifically detect S3 'NoSuchBucket'
 and Azure 'ContainerNotFound' errors, in addition to dangling DNS.
@@ -26,7 +27,7 @@ IGNORE_DIRS = ('.git', '.github', 'node_modules', 'dist', 'build', '.venv')
 
 # Custom User-Agent
 REQUEST_HEADERS = {
-    'User-Agent': 'MISS-Framework-Scanner/2.1'
+    'User-Agent': 'MISS-Framework-Scanner/2.2'
 }
 
 def find_links_in_file(filepath):
@@ -97,7 +98,7 @@ def check_azure_blob(url):
         
         # Check for the specific XML error code
         if response.status_code == 404 and "<Code>ContainerNotFound</Code>" in response.text:
-            return "Broken", "CRITICAL: Azure Blob container does not exist and is available for registration ('ContainerNotFound')."
+            return "CRITICAL: Azure Blob container does not exist and is available for registration ('ContainerNotFound')."
         
         if response.status_code == 200:
             return "OK", None
@@ -156,7 +157,12 @@ def check_dangling_dns(domain):
 def main():
     parser = argparse.ArgumentParser(description="MISS Framework BLH Scanner")
     parser.add_argument("--directory", default=".", help="Directory to scan")
-    parser.add.argument("--output", default="blh_report.json", help="Output JSON report file")
+    
+    # --- FIX ---
+    # Changed parser.add.argument to parser.add_argument
+    parser.add_argument("--output", default="blh_report.json", help="Output JSON report file")
+    # --- END FIX ---
+    
     args = parser.parse_args()
 
     print(f"Starting BLH Scan in: {args.directory}")
@@ -168,7 +174,6 @@ def main():
     for root, dirs, files in os.walk(args.directory):
         dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
         
-        # --- MODIFICATION ---
         # Removed the 'if file.endswith(SCAN_EXTENSIONS):' check.
         # Now we process *every* file.
         for file in files:
@@ -179,7 +184,6 @@ def main():
                 if link not in file_map:
                     file_map[link] = []
                 file_map[link].append(filepath)
-        # --- END MODIFICATION ---
 
     print(f"Found {len(all_links)} unique links. Analyzing...")
     
