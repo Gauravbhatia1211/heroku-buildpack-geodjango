@@ -1,9 +1,10 @@
 """
 MISS Framework - BLH Scanner (scan.py)
-VERSION 2.2 - Fixed typo in argparse (parser.add.argument -> parser.add_argument)
-VERSION 2.1 - Removed file extension filter to scan *all* files.
-Upgraded to specifically detect S3 'NoSuchBucket'
-and Azure 'ContainerNotFound' errors, in addition to dangling DNS.
+VERSION 2.3
+- Added --level flag ('warning' or 'critical') to filter noise.
+- Added IGNORE_DOMAINS to skip placeholders (example.com)
+  and unreliably-checked domains (github.com).
+- Added domain validation to skip garbage (like 'http', '...', '``')
 
 This is the core "Scan" pillar prototype. It finds links and checks
 if they are not just broken, but *hijackable*.
@@ -25,18 +26,45 @@ URL_REGEX = r'https?://[^\s"\'()<>\[\]]+'
 # Directories to ignore
 IGNORE_DIRS = ('.git', '.github', 'node_modules', 'dist', 'build', '.venv')
 
+# --- NEW: Domains to ignore ---
+# These are either placeholders (example.com) or domains that
+# fail DNS checks incorrectly (github.com) and are not hijackable anyway.
+IGNORE_DOMAINS = (
+    'example.com', 'localhost', '127.0.0.1',
+    'github.com', 'bitbucket.org', 'gitlab.com',
+    'twitter.com', 'facebook.com', 'linkedin.com',
+    'google.com', 'pypi.org', 'python.org', 'pythonhosted.org',
+    'bugs.python.org', 'docs.python.org', 'pypi.python.org',
+    'bugs.jython.org', 'hg.python.org'
+)
+
 # Custom User-Agent
 REQUEST_HEADERS = {
-    'User-Agent': 'MISS-Framework-Scanner/2.2'
+    'User-Agent': 'MISS-Framework-Scanner/2.3'
 }
+
+def is_valid_domain(domain):
+    """Simple check to filter out garbage like 'http', '...', '``'"""
+    if not domain:
+        return False
+    # Filter domains that are just punctuation or garbage
+    if not re.search(r'[a-zA-Z]', domain):
+        return False
+    if domain in ('http', 'https', '...'):
+        return False
+    if not re.match(r'^[a-zA-Z0-9.-]{3,}$', domain):
+        # Must be at least 3 chars and only valid domain chars
+        return False
+    if domain.startswith('.') or domain.endswith('.'):
+        return False
+    if '...' in domain:
+        return False
+    return True
 
 def find_links_in_file(filepath):
     """Finds all unique URLs in a single file."""
     links = set()
     try:
-        # We attempt to read every file as text.
-        # If it's a binary file, the read() will fail and the
-        # exception block will catch it and safely skip the file.
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
             for match in re.finditer(URL_REGEX, content):
@@ -71,18 +99,12 @@ def check_s3_bucket(url):
     This is the Reddit rpan-studio case.
     """
     try:
-        # We must use GET, not HEAD, to read the XML response body.
         response = requests.get(url, timeout=5, headers=REQUEST_HEADERS)
-        
-        # Check for the specific XML error code
         if response.status_code == 404 and "<Code>NoSuchBucket</Code>" in response.text:
             return "Broken", "CRITICAL: S3 bucket does not exist and is available for registration ('NoSuchBucket')."
-        
         if response.status_code == 200:
              return "OK", None
-
-        return f"Info ({response.status_code})", None # Exists, but not 200 (e.g., 403 Forbidden)
-        
+        return f"Info ({response.status_code})", None
     except requests.exceptions.Timeout:
         return "Broken (Timeout)", None
     except requests.exceptions.ConnectionError:
@@ -93,18 +115,12 @@ def check_s3_bucket(url):
 def check_azure_blob(url):
     """Specific check for Azure Blob 'ContainerNotFound' vulnerability."""
     try:
-        # Azure also returns an XML body on a GET request
         response = requests.get(url, timeout=5, headers=REQUEST_HEADERS)
-        
-        # Check for the specific XML error code
         if response.status_code == 404 and "<Code>ContainerNotFound</Code>" in response.text:
-            return "CRITICAL: Azure Blob container does not exist and is available for registration ('ContainerNotFound')."
-        
+            return "Broken", "CRITICAL: Azure Blob container does not exist and is available for registration ('ContainerNotFound')."
         if response.status_code == 200:
             return "OK", None
-            
         return f"Info ({response.status_code})", None
-        
     except requests.exceptions.Timeout:
         return "Broken (Timeout)", None
     except requests.exceptions.ConnectionError:
@@ -114,8 +130,7 @@ def check_azure_blob(url):
 
 def check_dangling_dns(domain):
     """
-    This is the original check, now only for custom domains.
-    It checks for expired domains or CNAMEs pointing to non-existent resources.
+    This checks for expired domains or CNAMEs pointing to non-existent resources.
     """
     
     # 1. Check for Expired/Available Domain
@@ -124,7 +139,7 @@ def check_dangling_dns(domain):
         if w is None or "No match for domain" in str(w) or "available for registration" in str(w):
             return "CRITICAL: Domain is available for registration."
     except Exception:
-        pass # WHOIS can be unreliable
+        pass 
 
     # 2. Check for Dangling DNS (CNAME pointing to nothing)
     try:
@@ -134,38 +149,41 @@ def check_dangling_dns(domain):
         
         cname_target = cname_records[0].target.to_text(omit_final_dot=True)
         
-        # Now, does that CNAME *target* resource exist?
         try:
             dns.resolver.resolve(cname_target)
         except dns.resolver.NXDOMAIN:
-            # The target resource does *NOT* exist. This is a classic dangling DNS!
             return f"CRITICAL: Dangling DNS. CNAME points to non-existent resource: {cname_target}"
         except dns.resolver.NoAnswer:
-            pass # Can't be sure
+            pass
 
     except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.resolver.NoNameservers, dns.resolver.NoMetaqueries):
-        # The custom domain itself doesn't exist.
         return "Warning: Domain does not resolve (NXDOMAIN)."
     except dns.resolver.NoRootSOA:
-        # A common whois guard
         return "Warning: Domain does not resolve (NoRootSOA)."
     except Exception:
-        pass # Other DNS errors
+        pass 
         
     return "Warning: Link is broken, but hijack vector not automatically confirmed."
 
 def main():
     parser = argparse.ArgumentParser(description="MISS Framework BLH Scanner")
     parser.add_argument("--directory", default=".", help="Directory to scan")
-    
-    # --- FIX ---
-    # Changed parser.add.argument to parser.add_argument
     parser.add_argument("--output", default="blh_report.json", help="Output JSON report file")
-    # --- END FIX ---
+    
+    # --- NEW ---
+    parser.add_argument(
+        "--level", 
+        default="critical", 
+        choices=['warning', 'critical'],
+        help="Minimum vulnerability level to report (default: critical)"
+    )
+    # --- END NEW ---
     
     args = parser.parse_args()
+    report_level = args.level.upper() # 'CRITICAL' or 'WARNING'
 
     print(f"Starting BLH Scan in: {args.directory}")
+    print(f"Reporting level set to: {report_level}")
     print("Scanning ALL file types...")
     
     all_links = set()
@@ -174,8 +192,6 @@ def main():
     for root, dirs, files in os.walk(args.directory):
         dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
         
-        # Removed the 'if file.endswith(SCAN_EXTENSIONS):' check.
-        # Now we process *every* file.
         for file in files:
             filepath = os.path.join(root, file)
             links_in_file = find_links_in_file(filepath)
@@ -193,43 +209,60 @@ def main():
         print(f"Checking [{i+1}/{len(all_links)}] {link}...")
         
         domain = urlparse(link).hostname
-        if not domain:
-            print(f"  -> INFO: Skipping link with no domain: {link}")
+        
+        # --- NEW: Validation and Filtering ---
+        if not is_valid_domain(domain):
+            print(f"  -> INFO: Skipping invalid or garbage domain: {domain}")
             continue
+            
+        # Check if the domain *ends with* any of the ignored domains
+        if any(domain.endswith(ignored) for ignored in IGNORE_DOMAINS):
+            print(f"  -> INFO: Skipping ignored domain: {domain}")
+            continue
+        # --- END NEW ---
         
         status = "OK"
         vulnerability = None
 
-        # Route to the correct checker
         if 's3.amazonaws.com' in domain:
             status, vulnerability = check_s3_bucket(link)
         elif 'blob.core.windows.net' in domain:
             status, vulnerability = check_azure_blob(link)
         else:
-            # Generic domain check
             status = check_http_status(link)
             if status != "OK":
                 vulnerability = check_dangling_dns(domain)
         
-        # Rate limit to avoid being blocked
         time.sleep(0.1) 
 
         if status != "OK":
-            result = {
-                "link": link,
-                "status": status,
-                "domain": domain,
-                "vulnerability_type": vulnerability,
-                "found_in": file_map[link]
-            }
-            print(f"  -> VULNERABLE: {status} - {vulnerability}")
-            results.append(result)
+            # --- NEW: Level-based reporting ---
+            is_critical = vulnerability and "CRITICAL" in vulnerability
+            
+            # Add to report if...
+            # 1. The report level is 'warning' (we report everything)
+            # OR
+            # 2. The report level is 'critical' AND this finding is critical
+            if report_level == 'WARNING' or (report_level == 'CRITICAL' and is_critical):
+                result = {
+                    "link": link,
+                    "status": status,
+                    "domain": domain,
+                    "vulnerability_type": vulnerability,
+                    "found_in": file_map[link]
+                }
+                print(f"  -> VULNERABLE: {status} - {vulnerability}")
+                results.append(result)
+            else:
+                # We found a 'warning' but the user only wants 'critical'
+                print(f"  -> INFO: Skipping 'Warning' level finding (not critical).")
+            # --- END NEW ---
 
-    # Write the JSON report
     report_data = {
         "summary": {
             "total_links_scanned": len(all_links),
-            "vulnerabilities_found": len(results)
+            "vulnerabilities_found": len(results),
+            "report_level": report_level
         },
         "vulnerabilities": results
     }
@@ -241,4 +274,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
