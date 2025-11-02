@@ -2,6 +2,9 @@ name: 'BLH Scan Demo'
 
 on:
   workflow_dispatch: # Allows manual triggering
+  push:
+    branches: [ main ]
+  pull_request:
 
 jobs:
   scan:
@@ -14,12 +17,7 @@ jobs:
         id: blh_scan
         uses: ./.github/actions/blh-scanner # Assumes your action is here
         with:
-          # --- NEW ---
-          # This will now only report 'CRITICAL' findings
           level: 'critical' 
-          # Change to 'warning' to see all 300+ broken links
-          
-          # --- END NEW ---
           report-name: 'blh_report.json'
 
       - name: 'Upload Scan Report'
@@ -27,4 +25,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: blh-report
-          path: ${{ steps.blh_scan.outputs.report_path }}
+          # --- THIS IS THE FIX ---
+          # This line was missing. It tells the action to upload
+          # the report file that our scan step generated.
+          path: ${{ steps.blh_scan.outputs.report-path }}
+          # --- END FIX ---
+
