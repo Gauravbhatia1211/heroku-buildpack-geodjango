@@ -1,32 +1,29 @@
-# This file shows you how to *use* your new module.
-# Save this in your repo at: .github/workflows/scan-demo.yml
-
 name: 'BLH Scan Demo'
 
 on:
-  push:
-    branches: [ main ] # Runs when you push to main
-  workflow_dispatch: # Allows you to run it manually
+  workflow_dispatch: # Allows manual triggering
 
 jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
-      # 1. Checkout your code so the action can scan it
-      - name: Checkout code
+      - name: 'Checkout Repository'
         uses: actions/checkout@v4
 
-      # 2. Run your new BLH Scanner
-      #    We use './.github/actions/blh-scanner' if you save
-      #    your module in that common directory.
-      - name: Run MISS Framework BLH Scanner
+      - name: 'Run BLH Scanner (MISS Framework)'
         id: blh_scan
-        uses: ./.github/actions/blh-scanner # <-- UPDATE THIS PATH
-        # This assumes you saved the 'blh-scanner' folder
-        # in '.github/actions/'
-        
-      # 3. Upload the JSON report as an "artifact"
-      - name: Upload Scan Report
+        uses: ./.github/actions/blh-scanner # Assumes your action is here
+        with:
+          # --- NEW ---
+          # This will now only report 'CRITICAL' findings
+          level: 'critical' 
+          # Change to 'warning' to see all 300+ broken links
+          
+          # --- END NEW ---
+          report-name: 'blh_report.json'
+
+      - name: 'Upload Scan Report'
+        if: always() # Always upload, even if the scan step fails
         uses: actions/upload-artifact@v4
         with:
           name: blh-report
